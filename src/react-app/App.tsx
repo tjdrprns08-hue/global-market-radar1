@@ -1,5 +1,5 @@
-// src/App.tsx
-import { useEffect, useState } from "react";
+// src/react-app/App.tsx
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
 type Market = "BINANCE" | "UPBIT" | "BITHUMB" | "OKX";
@@ -12,10 +12,6 @@ interface LiveNewsItem {
   time: string;
 }
 
-interface LiveNewsResponse {
-  items: LiveNewsItem[];
-}
-
 interface WatchlistItem {
   symbol: string;
   market: Market;
@@ -23,6 +19,24 @@ interface WatchlistItem {
   change24h: number; // %
   volume24h: number;
 }
+
+interface PriceInfo {
+  lastPrice: number;
+  change24h: number;
+  volume24h: number;
+}
+
+interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+// 전역 lightweight-charts (CDN)
+declare const LightweightCharts: any;
 
 function App() {
   const [selectedMarket, setSelectedMarket] = useState<Market>("BINANCE");
@@ -33,54 +47,90 @@ function App() {
     {
       symbol: "BTCUSDT",
       market: "BINANCE",
-      lastPrice: 95000,
-      change24h: 2.5,
-      volume24h: 123456789,
+      lastPrice: 0,
+      change24h: 0,
+      volume24h: 0,
     },
     {
       symbol: "ETHUSDT",
       market: "BINANCE",
-      lastPrice: 5200,
-      change24h: -1.2,
-      volume24h: 45678901,
+      lastPrice: 0,
+      change24h: 0,
+      volume24h: 0,
     },
     {
       symbol: "SOLUSDT",
       market: "BINANCE",
-      lastPrice: 320,
-      change24h: 8.7,
-      volume24h: 9876543,
+      lastPrice: 0,
+      change24h: 0,
+      volume24h: 0,
     },
   ]);
 
+  // 현재 심볼 영역에 표시할 가격 데이터
+  const [priceInfo, setPriceInfo] = useState<PriceInfo | null>(null);
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [priceError, setPriceError] = useState<string | null>(null);
+
+  // 뉴스
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
   const [news, setNews] = useState<LiveNewsItem[]>([]);
 
-  // 🔎 /api/live-news 호출 (Cloudflare Worker 연결용 뼈대)
+  // 차트용
+  const chartContainerRef = useRef<HTMLDivElement | null>(null);
+  const [klineLoading, setKlineLoading] = useState(false);
+  const [klineError, setKlineError] = useState<string | null>(null);
+
+  // ---- 가격 API 호출 함수 ----
+  const fetchPrice = async (market: Market, symbol: string) => {
+    setPriceLoading(true);
+    setPriceError(null);
+    try {
+      const res = await fetch(
+        `/api/price?market=${market}&symbol=${encodeURIComponent(symbol)}`
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data: PriceInfo = await res.json();
+      setPriceInfo(data);
+
+      // 워치리스트에도 반영
+      setWatchlist((prev) =>
+        prev.map((item) =>
+          item.market === market && item.symbol === symbol
+            ? {
+                ...item,
+                lastPrice: data.lastPrice,
+                change24h: data.change24h,
+                volume24h: data.volume24h,
+              }
+            : item
+        )
+      );
+    } catch (err: any) {
+      console.error("fetchPrice error:", err);
+      setPriceError(err.message ?? String(err));
+    } finally {
+      setPriceLoading(false);
+    }
+  };
+
+  // ---- 라이브 뉴스 ----
   useEffect(() => {
     const fetchNews = async () => {
       setNewsLoading(true);
       setNewsError(null);
       try {
         const res = await fetch("/api/live-news");
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        // TODO: 실제 Worker 응답 구조에 맞게 타입 맞추기
-        const data: LiveNewsResponse | LiveNewsItem[] = await res.json();
-
-        // 응답이 { items: [...] } 형태인지, 그냥 배열인지 둘 다 처리
-        if (Array.isArray(data)) {
-          setNews(data);
-        } else if (Array.isArray(data.items)) {
-          setNews(data.items);
-        } else {
-          setNews([]);
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: LiveNewsItem[] = await res.json();
+        setNews(data);
       } catch (err: any) {
-        console.error("Failed to fetch live news:", err);
-        setNewsError("라이브 뉴스 불러오기에 실패했습니다. Worker 응답을 확인해주세요.");
+        console.error("live news error:", err);
+        setNewsError("라이브 뉴스 불러오기에 실패했습니다.");
       } finally {
         setNewsLoading(false);
       }
@@ -89,14 +139,101 @@ function App() {
     fetchNews();
   }, []);
 
-  // ✅ 심볼 적용 버튼
+  // ---- 처음 로딩 시 기본 심볼(BTCUSDT @ BINANCE) 가격 한번 가져오기 ----
+  useEffect(() => {
+    fetchPrice("BINANCE", "BTCUSDT");
+  }, []);
+
+  // ---- 차트: activeSymbol / selectedMarket 바뀔 때마다 캔들 호출 ----
+  useEffect(() => {
+    const container = chartContainerRef.current;
+    if (!container || !("LightweightCharts" in window)) return;
+
+    setKlineLoading(true);
+    setKlineError(null);
+
+    // 차트 생성
+    const chart = LightweightCharts.createChart(container, {
+      layout: {
+        background: { color: "#020617" },
+        textColor: "#e5e7eb",
+      },
+      grid: {
+        vertLines: { color: "#111827" },
+        horzLines: { color: "#111827" },
+      },
+      timeScale: {
+        borderColor: "#1f2937",
+      },
+      rightPriceScale: {
+        borderColor: "#1f2937",
+      },
+      width: container.clientWidth,
+      height: 260,
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: "#22c55e",
+      downColor: "#ef4444",
+      borderUpColor: "#22c55e",
+      borderDownColor: "#ef4444",
+      wickUpColor: "#22c55e",
+      wickDownColor: "#ef4444",
+    });
+
+    const handleResize = () => {
+      chart.applyOptions({ width: container.clientWidth });
+    };
+    window.addEventListener("resize", handleResize);
+
+    const loadKlines = async () => {
+      try {
+        // 현재는 BINANCE만 지원
+        const res = await fetch(
+          `/api/kline?market=${selectedMarket}&symbol=${encodeURIComponent(
+            activeSymbol
+          )}&interval=1h&limit=150`
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        const data: Candle[] = await res.json();
+
+        const formatted = data.map((c) => ({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        }));
+
+        candleSeries.setData(formatted);
+      } catch (err: any) {
+        console.error("kline error:", err);
+        setKlineError(err.message ?? String(err));
+      } finally {
+        setKlineLoading(false);
+      }
+    };
+
+    loadKlines();
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      chart.remove();
+    };
+  }, [activeSymbol, selectedMarket]);
+
+  // ---- 심볼 적용 버튼 ----
   const handleApplySymbol = () => {
     const trimmed = symbolInput.trim().toUpperCase();
     if (!trimmed) return;
     setActiveSymbol(trimmed);
+    fetchPrice(selectedMarket, trimmed);
   };
 
-  // ✅ 워치리스트에 추가
+  // ---- 워치리스트에 추가 ----
   const handleAddToWatchlist = () => {
     const trimmed = symbolInput.trim().toUpperCase();
     if (!trimmed) return;
@@ -109,13 +246,14 @@ function App() {
     const newItem: WatchlistItem = {
       symbol: trimmed,
       market: selectedMarket,
-      // TODO: 나중에 실제 가격 / 변동률 / 거래량 API로 채우기
       lastPrice: 0,
       change24h: 0,
       volume24h: 0,
     };
 
     setWatchlist((prev) => [newItem, ...prev]);
+    // 추가하면서 바로 가격 가져오기
+    fetchPrice(selectedMarket, trimmed);
   };
 
   return (
@@ -129,12 +267,14 @@ function App() {
           </p>
         </div>
 
-        {/* 마켓 선택 + 심볼 입력 */}
         <div className="top-controls">
           <select
             className="select"
             value={selectedMarket}
-            onChange={(e) => setSelectedMarket(e.target.value as Market)}
+            onChange={(e) => {
+              const m = e.target.value as Market;
+              setSelectedMarket(m);
+            }}
           >
             <option value="BINANCE">Binance</option>
             <option value="UPBIT">Upbit</option>
@@ -146,7 +286,7 @@ function App() {
             className="input"
             value={symbolInput}
             onChange={(e) => setSymbolInput(e.target.value)}
-            placeholder="예: BTCUSDT / BTC-KRW"
+            placeholder="예: BTCUSDT / BTC-KRW / BTC_KRW / BTC-USDT"
           />
 
           <button className="button primary" onClick={handleApplySymbol}>
@@ -160,7 +300,7 @@ function App() {
 
       {/* 메인 3열 레이아웃 */}
       <main className="app-grid">
-        {/* 1. 좌측: 현재 심볼 요약 · 워치리스트 */}
+        {/* 1. 좌측: 현재 심볼 + 워치리스트 */}
         <section className="panel">
           <h2 className="panel-title">현재 심볼</h2>
           <div className="symbol-card">
@@ -169,21 +309,56 @@ function App() {
               <span className="symbol-name">{activeSymbol}</span>
             </div>
 
-            {/* TODO: 여기 이후는 실제 시세 API 붙이면서 교체 */}
             <div className="symbol-body">
               <div className="symbol-row">
                 <span className="label">Last Price</span>
-                <span className="value">–</span>
+                <span className="value">
+                  {priceLoading
+                    ? "Loading..."
+                    : priceInfo
+                    ? priceInfo.lastPrice.toLocaleString(undefined, {
+                        maximumFractionDigits: 4,
+                      })
+                    : "–"}
+                </span>
               </div>
               <div className="symbol-row">
                 <span className="label">24h Change</span>
-                <span className="value positive">–</span>
+                <span
+                  className={
+                    priceInfo && priceInfo.change24h > 0
+                      ? "value positive"
+                      : priceInfo && priceInfo.change24h < 0
+                      ? "value negative"
+                      : "value"
+                  }
+                >
+                  {priceLoading
+                    ? "Loading..."
+                    : priceInfo
+                    ? `${priceInfo.change24h.toFixed(2)}%`
+                    : "–"}
+                </span>
               </div>
               <div className="symbol-row">
-                <span className="label">24h Volume</span>
-                <span className="value">–</span>
+                <span className="label">24h Volume (quote)</span>
+                <span className="value">
+                  {priceLoading
+                    ? "Loading..."
+                    : priceInfo
+                    ? priceInfo.volume24h.toLocaleString(undefined, {
+                        maximumFractionDigits: 2,
+                      })
+                    : "–"}
+                </span>
               </div>
             </div>
+
+            {priceError && (
+              <div className="error" style={{ marginTop: 8 }}>
+                {priceError}
+              </div>
+            )}
           </div>
 
           <h2 className="panel-title mt-24">워치리스트</h2>
@@ -200,6 +375,7 @@ function App() {
                   setSelectedMarket(item.market);
                   setActiveSymbol(item.symbol);
                   setSymbolInput(item.symbol);
+                  fetchPrice(item.market, item.symbol);
                 }}
               >
                 <div className="watch-symbol-row">
@@ -208,7 +384,11 @@ function App() {
                 </div>
                 <div className="watch-meta-row">
                   <span className="watch-price">
-                    {item.lastPrice ? item.lastPrice.toLocaleString() : "—"}
+                    {item.lastPrice
+                      ? item.lastPrice.toLocaleString(undefined, {
+                          maximumFractionDigits: 4,
+                        })
+                      : "—"}
                   </span>
                   <span
                     className={
@@ -229,29 +409,34 @@ function App() {
           </div>
         </section>
 
-        {/* 2. 중앙: 차트 영역 (현재는 placeholder 텍스트) */}
+        {/* 2. 중앙: 차트 */}
         <section className="panel">
-          <h2 className="panel-title">차트 / 오더북 (Placeholder)</h2>
-          <div className="chart-placeholder">
-            {/* 
-              TODO:
-              - 나중에 여기에 lightweight-charts, TradingView 위젯, 
-                또는 자체 캔들차트 컴포넌트 붙이면 됨.
-            */}
-            <p className="placeholder-title">
-              차트 엔진 아직 연결 전입니다 🔧
-            </p>
-            <p className="placeholder-text">
-              나중에 여기에는{" "}
-              <strong>캔들차트 + 거래량 + 오더북/체결창</strong> 구역 들어갈 자리.
-              <br />
-              먼저 API 구조 완성한 뒤, 필요하면 내가 lightweight-charts 코드까지
-              짜줄게.
-            </p>
+          <h2 className="panel-title">차트 / 오더북</h2>
+          <div
+            className="chart-placeholder"
+            ref={chartContainerRef}
+            style={{ padding: 0 }}
+          >
+            {/* 차트는 JS가 ref 위에 직접 그림 */}
           </div>
+          {klineLoading && (
+            <div className="info" style={{ marginTop: 8 }}>
+              캔들 데이터 불러오는 중…
+            </div>
+          )}
+          {klineError && (
+            <div className="error" style={{ marginTop: 8 }}>
+              {klineError}
+            </div>
+          )}
+          {!klineLoading && !klineError && selectedMarket !== "BINANCE" && (
+            <div className="info" style={{ marginTop: 8 }}>
+              현재 캔들 차트는 BINANCE 기준만 지원합니다.
+            </div>
+          )}
         </section>
 
-        {/* 3. 우측: 라이브 뉴스 패널 */}
+        {/* 3. 우측: 라이브 뉴스 */}
         <section className="panel">
           <h2 className="panel-title">라이브 뉴스 (/api/live-news)</h2>
 
@@ -279,11 +464,6 @@ function App() {
               </article>
             ))}
           </div>
-
-          {/* 디버그용 원시 JSON 보기 (개발 중에만 쓸 것) */}
-          {/* <pre className="debug-json">
-            {JSON.stringify(news, null, 2)}
-          </pre> */}
         </section>
       </main>
     </div>
