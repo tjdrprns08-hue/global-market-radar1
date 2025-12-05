@@ -4,6 +4,8 @@ export interface Env {
   ASSETS: Fetcher;
 }
 
+// ---------------- 공통 타입 ----------------
+
 type PriceResponse = {
   lastPrice: number;
   change24h: number;
@@ -18,6 +20,8 @@ type Candle = {
   close: number;
   volume: number;
 };
+
+// ---------------- 라이브 뉴스 ----------------
 
 async function handleLiveNews(): Promise<Response> {
   const now = new Date();
@@ -61,16 +65,15 @@ async function handleLiveNews(): Promise<Response> {
   });
 }
 
-// ---- 가격 API ----
+// ---------------- 가격 API ----------------
 
 async function fetchBinancePrice(symbol: string): Promise<PriceResponse> {
   const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(
     symbol
   )}`;
   const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Binance HTTP ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
+
   const data: any = await res.json();
 
   return {
@@ -81,15 +84,14 @@ async function fetchBinancePrice(symbol: string): Promise<PriceResponse> {
 }
 
 async function fetchUpbitPrice(symbol: string): Promise<PriceResponse> {
-  // 예: BTC-KRW, ETH-KRW
+  // 예: BTC-KRW
   const url = `https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(
     symbol
   )}`;
   const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Upbit HTTP ${res.status}`);
-  }
-  const arr: any = await res.json();
+  if (!res.ok) throw new Error(`Upbit HTTP ${res.status}`);
+
+  const arr: any[] = await res.json();
   const data = arr[0];
 
   return {
@@ -105,9 +107,8 @@ async function fetchBithumbPrice(symbol: string): Promise<PriceResponse> {
     symbol
   )}`;
   const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Bithumb HTTP ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`Bithumb HTTP ${res.status}`);
+
   const json: any = await res.json();
   const data = json.data;
 
@@ -119,21 +120,19 @@ async function fetchBithumbPrice(symbol: string): Promise<PriceResponse> {
 }
 
 async function fetchOkxPrice(symbol: string): Promise<PriceResponse> {
-  // 예: BTC-USDT (spot)
+  // 예: BTC-USDT
   const url = `https://www.okx.com/api/v5/market/ticker?instId=${encodeURIComponent(
     symbol
   )}`;
   const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`OKX HTTP ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`OKX HTTP ${res.status}`);
+
   const json: any = await res.json();
   const data = json.data?.[0];
 
   const last = parseFloat(data.last);
   const open24h = parseFloat(data.open24h);
   const volQuote = parseFloat(data.volCcy24h ?? data.vol24h);
-
   const change24h = ((last - open24h) / open24h) * 100;
 
   return {
@@ -184,7 +183,7 @@ async function handlePrice(request: Request): Promise<Response> {
   }
 }
 
-// ---- 캔들(kline) API : 현재 BINANCE 전용 ----
+// ---------------- 캔들(Kline) API : BINANCE 전용 ----------------
 
 async function fetchBinanceKlines(
   symbol: string,
@@ -196,22 +195,20 @@ async function fetchBinanceKlines(
   )}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
 
   const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Binance klines HTTP ${res.status}`);
-  }
-  const data: any = await res.json();
+  if (!res.ok) throw new Error(`Binance klines HTTP ${res.status}`);
 
-  // Binance 반환 형식: [ openTime, open, high, low, close, volume, closeTime, ... ]
-  const candles: Candle[] = data.map((row: any[]) => ({
-    time: Math.floor(row[0] / 1000), // ms → sec
-    open: parseFloat(row[1]),
-    high: parseFloat(row[2]),
-    low: parseFloat(row[3]),
-    close: parseFloat(row[4]),
-    volume: parseFloat(row[5]),
-  }));
+  const data: any[] = await res.json();
 
-  return candles;
+  return data.map(
+    (row: any[]): Candle => ({
+      time: Math.floor(row[0] / 1000),
+      open: parseFloat(row[1]),
+      high: parseFloat(row[2]),
+      low: parseFloat(row[3]),
+      close: parseFloat(row[4]),
+      volume: parseFloat(row[5]),
+    })
+  );
 }
 
 async function handleKline(request: Request): Promise<Response> {
@@ -245,7 +242,7 @@ async function handleKline(request: Request): Promise<Response> {
   }
 }
 
-// ---- 메인 fetch 핸들러 ----
+// ---------------- 메인 fetch 핸들러 ----------------
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext) {
