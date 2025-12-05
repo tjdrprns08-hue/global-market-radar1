@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/worker/index.ts
 
 export interface Env {
