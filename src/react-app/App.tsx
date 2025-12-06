@@ -1,450 +1,397 @@
-// src/react-app/App.tsx
-import { useEffect, useRef, useState } from "react";
-import "./App.css";
 
-type Market = "BINANCE" | "UPBIT" | "BITHUMB" | "OKX";
 
-interface LiveNewsItem {
-  id: string;
-  source: string;
-  title: string;
-  symbol?: string;
-  time: string;
-}
+import React, { useState, useEffect, useRef } from 'react';
+import Header from './components/Header';
+import SignalList from './components/SignalList';
+import ChartPanel from './components/ChartPanel';
+import DetailPanel from './components/DetailPanel';
+import { RightPanel } from './components/RightPanel';
+import { AnalysisModal } from './components/AnalysisModal';
+import { NewsPopup } from './components/NewsPopup';
+import { SimulationModal } from './components/SimulationModal';
+import { BreakingNewsTicker } from './components/BreakingNewsTicker';
+import { SystemUpdateModal } from './components/SystemUpdateModal';
+import { Signal, Preset, AgentLog, MarketType, WhaleAlert, WhaleSignal, DeepDiveModel, AnalysisStyle } from './types';
+import { generateMockSignal } from './services/mockService';
+import { AGENT_NAMES } from './constants';
+import { LanguageProvider } from './contexts/LanguageContext';
+import { SystemProvider, useSystem } from './contexts/SystemContext';
+import { BinanceScanner } from './services/binanceScanner';
+import { analyzeSignalWithPerplexity, PerplexityResponse } from './services/perplexityService';
+import { fetchBatchStockQuotes, fetchSingleQuote } from './services/quoteService';
+import { WATCH_LIST } from './components/StockPanel';
+import { LayoutDashboard, BarChart2, Globe, List } from 'lucide-react';
 
-interface WatchlistItem {
-  symbol: string;
-  market: Market;
-  lastPrice: number;
-  change24h: number; // %
-  volume24h: number;
-}
+// Initial Watchlist
+const INITIAL_STOCKS = WATCH_LIST.map(symbol => ({
+  symbol,
+  market: (symbol.includes('.KS') ? 'KOSPI' : symbol.includes('.KQ') ? 'KOSDAQ' : 'NASDAQ') as MarketType
+}));
 
-interface PriceInfo {
-  lastPrice: number;
-  change24h: number;
-  volume24h: number;
-}
+const Dashboard: React.FC = () => {
+  const { config } = useSystem();
+  
+  const [signals, setSignals] = useState<Signal[]>([]);
+  const [whales, setWhales] = useState<WhaleAlert[]>([]);
+  const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
+  const [activePreset, setActivePreset] = useState<Preset | null>(null);
+  const [activeFilter, setActiveFilter] = useState<string>('ALL');
+  const [logs, setLogs] = useState<AgentLog[]>([]);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(false);
+  
+  // View State
+  const [viewMode, setViewMode] = useState<'PC' | 'MOBILE'>('PC');
+  const [mobileTab, setMobileTab] = useState<'SIGNALS' | 'CHART' | 'MARKET'>('CHART');
 
-interface Candle {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+  // Analysis State
+  const [isAnalysisOpen, setIsAnalysisOpen] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<PerplexityResponse | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [isSimulationOpen, setIsSimulationOpen] = useState(false);
+  const [isSystemUpdateOpen, setIsSystemUpdateOpen] = useState(false);
+  const [newsPopup, setNewsPopup] = useState<{ isOpen: boolean, symbol: string, market: MarketType }>({ isOpen: false, symbol: '', market: 'NASDAQ' });
+  const [isNewsLoading, setIsNewsLoading] = useState(false);
+  
+  const scannerRef = useRef<BinanceScanner | null>(null);
+  const hasSelectedInitialSignal = useRef(false);
 
-// 전역 lightweight-charts (CDN)
-declare const LightweightCharts: any;
-
-function App() {
-  const [selectedMarket, setSelectedMarket] = useState<Market>("BINANCE");
-  const [symbolInput, setSymbolInput] = useState<string>("BTCUSDT");
-  const [activeSymbol, setActiveSymbol] = useState<string>("BTCUSDT");
-
-  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([
-    {
-      symbol: "BTCUSDT",
-      market: "BINANCE",
-      lastPrice: 0,
-      change24h: 0,
-      volume24h: 0,
-    },
-    {
-      symbol: "ETHUSDT",
-      market: "BINANCE",
-      lastPrice: 0,
-      change24h: 0,
-      volume24h: 0,
-    },
-    {
-      symbol: "SOLUSDT",
-      market: "BINANCE",
-      lastPrice: 0,
-      change24h: 0,
-      volume24h: 0,
-    },
-  ]);
-
-  // 현재 심볼 영역에 표시할 가격 데이터
-  const [priceInfo, setPriceInfo] = useState<PriceInfo | null>(null);
-  const [priceLoading, setPriceLoading] = useState(false);
-  const [priceError, setPriceError] = useState<string | null>(null);
-
-  // 뉴스
-  const [newsLoading, setNewsLoading] = useState(false);
-  const [newsError, setNewsError] = useState<string | null>(null);
-  const [news, setNews] = useState<LiveNewsItem[]>([]);
-
-  // 차트용
-  const chartContainerRef = useRef<HTMLDivElement | null>(null);
-  const [klineLoading, setKlineLoading] = useState(false);
-  const [klineError, setKlineError] = useState<string | null>(null);
-
-  // ---- 가격 API 호출 함수 ----
-  const fetchPrice = async (market: Market, symbol: string) => {
-    setPriceLoading(true);
-    setPriceError(null);
-    try {
-      const res = await fetch(
-        `/api/price?market=${market}&symbol=${encodeURIComponent(symbol)}`
-      );
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-      const data: PriceInfo = await res.json();
-      setPriceInfo(data);
-
-      // 워치리스트에도 반영
-      setWatchlist((prev) =>
-        prev.map((item) =>
-          item.market === market && item.symbol === symbol
-            ? {
-                ...item,
-                lastPrice: data.lastPrice,
-                change24h: data.change24h,
-                volume24h: data.volume24h,
-              }
-            : item
-        )
-      );
-    } catch (err: any) {
-      console.error("fetchPrice error:", err);
-      setPriceError(err.message ?? String(err));
-    } finally {
-      setPriceLoading(false);
-    }
-  };
-
-  // ---- 라이브 뉴스 ----
+  // 1. Initialize Stocks
   useEffect(() => {
-    const fetchNews = async () => {
-      setNewsLoading(true);
-      setNewsError(null);
-      try {
-        const res = await fetch("/api/live-news");
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: LiveNewsItem[] = await res.json();
-        setNews(data);
-      } catch (err: any) {
-        console.error("live news error:", err);
-        setNewsError("라이브 뉴스 불러오기에 실패했습니다.");
-      } finally {
-        setNewsLoading(false);
-      }
+    const initStocks = async () => {
+        const stockSymbols = INITIAL_STOCKS.map(s => s.symbol);
+        try {
+            const quotes = await fetchBatchStockQuotes(stockSymbols);
+            const stockSignals = INITIAL_STOCKS.map(stock => {
+                const quote = quotes.find(q => q.symbol === stock.symbol);
+                return generateMockSignal(stock.symbol, stock.market, quote?.price ?? 0, quote?.changePercent ?? 0);
+            });
+            
+            setSignals(prev => {
+                // 1. Keep Crypto Signals (managed by Binance Scanner)
+                const crypto = prev.filter(s => s.market === 'CRYPTO');
+                
+                // 2. Keep User-Searched Signals (Items not in the default watchlist but exist in current state)
+                const userSearched = prev.filter(s => 
+                    s.market !== 'CRYPTO' && 
+                    !INITIAL_STOCKS.some(init => init.symbol === s.symbol)
+                );
+
+                // 3. Merge: Crypto + Preserved Search + Fresh Watchlist Updates
+                return [...crypto, ...userSearched, ...stockSignals];
+            });
+
+            if (!hasSelectedInitialSignal.current && stockSignals.length > 0) {
+                setSelectedSignalId(stockSignals[0].id);
+                hasSelectedInitialSignal.current = true;
+            }
+        } catch (e) { console.error(e); }
     };
-
-    fetchNews();
+    
+    initStocks();
+    const id = setInterval(initStocks, 10000); 
+    return () => clearInterval(id);
   }, []);
 
-  // ---- 처음 로딩 시 기본 심볼(BTCUSDT @ BINANCE) 가격 한번 가져오기 ----
+  // 2. Initialize Binance Scanner
   useEffect(() => {
-    fetchPrice("BINANCE", "BTCUSDT");
-  }, []);
+    const scanner = new BinanceScanner(
+      (realSignal) => {
+        setSignals(prev => {
+          const idx = prev.findIndex(s => s.symbol === realSignal.symbol);
+          if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = { 
+                  ...updated[idx], 
+                  price: realSignal.price, 
+                  change_rate: realSignal.change_rate,
+                  volume: realSignal.volume,
+                  score: realSignal.score
+              };
+              return updated;
+          }
+          return [realSignal, ...prev];
+        });
+      },
+      (whale) => {
+        const threshold = config.thresholds.whaleUsd;
+        if (whale.value < threshold) return;
+        
+        const newAlert: WhaleAlert = {
+            id: Math.random().toString(),
+            timestamp: Date.now(),
+            symbol: whale.symbol,
+            market: 'CRYPTO',
+            type: 'LARGE_ORDER',
+            side: whale.side,
+            amount_usd: whale.value,
+            description: whale.description
+        };
 
- // ---- 차트: activeSymbol / selectedMarket 바뀔 때마다 캔들 호출 ----
-useEffect(() => {
-  const container = chartContainerRef.current;
-  if (!container || !("LightweightCharts" in window)) return;
-
-  setKlineLoading(true);
-  setKlineError(null);
-
-  const chart = LightweightCharts.createChart(container, {
-    // ...
-  });
-
-  const candleSeries = chart.addCandlestickSeries({
-    // ...
-  });
-
-  const handleResize = () => {
-    chart.applyOptions({ width: container.clientWidth });
-  };
-  window.addEventListener("resize", handleResize);
-
-  const loadKlines = async () => {
-    try {
-      const res = await fetch(
-        `/api/kline?market=${selectedMarket}&symbol=${encodeURIComponent(
-          activeSymbol
-        )}&interval=1h&limit=150`
-      );
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${res.status}`);
+        setWhales(prev => [newAlert, ...prev].slice(0, 50));
+        setSignals(prev => prev.map(s => {
+            if (s.symbol === whale.symbol) {
+                const wSignal: WhaleSignal = {
+                    type: 'LARGE_ORDER',
+                    description: `Executed ${whale.side} $${Math.floor(whale.value).toLocaleString()}`,
+                    intensity: Math.min(whale.value / 1000000, 1)
+                };
+                return {
+                    ...s,
+                    whale_signals: [wSignal, ...s.whale_signals].slice(0, 20)
+                };
+            }
+            return s;
+        }));
       }
-      const data: Candle[] = await res.json();
-
-      const formatted = data.map((c) => ({
-        time: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      }));
-
-      candleSeries.setData(formatted);
-    } catch (err: any) {
-      console.error("kline error:", err);
-      setKlineError(err.message ?? String(err));
-    } finally {
-      setKlineLoading(false);
-    }
-  };
-
-  loadKlines();
-
-  return () => {
-    window.removeEventListener("resize", handleResize);
-    chart.remove();
-  };
-}, [activeSymbol, selectedMarket]);
-
-  // ---- 심볼 적용 버튼 ----
-  const handleApplySymbol = () => {
-    const trimmed = symbolInput.trim().toUpperCase();
-    if (!trimmed) return;
-    setActiveSymbol(trimmed);
-    fetchPrice(selectedMarket, trimmed);
-  };
-
-  // ---- 워치리스트에 추가 ----
-  const handleAddToWatchlist = () => {
-    const trimmed = symbolInput.trim().toUpperCase();
-    if (!trimmed) return;
-
-    const exists = watchlist.some(
-      (item) => item.symbol === trimmed && item.market === selectedMarket
     );
-    if (exists) return;
+    scanner.start();
+    scannerRef.current = scanner;
+    return () => scanner.stop();
+  }, [config.thresholds.whaleUsd]); 
 
-    const newItem: WatchlistItem = {
-      symbol: trimmed,
-      market: selectedMarket,
-      lastPrice: 0,
-      change24h: 0,
-      volume24h: 0,
+  // Auto-detect Mobile Screen
+  useEffect(() => {
+    const checkMobile = () => {
+        if (window.innerWidth < 768) {
+            setViewMode('MOBILE');
+        } else {
+            setViewMode('PC');
+        }
     };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
-    setWatchlist((prev) => [newItem, ...prev]);
-    // 추가하면서 바로 가격 가져오기
-    fetchPrice(selectedMarket, trimmed);
+  const handleSearch = async (query: string) => {
+      const qUpper = query.toUpperCase();
+      
+      const existing = signals.find(s => s.symbol.toUpperCase() === qUpper || s.id.toUpperCase() === qUpper);
+      if (existing) {
+          setSelectedSignalId(existing.id);
+          if (viewMode === 'MOBILE') setMobileTab('CHART');
+          return;
+      }
+
+      try {
+          const quote = await fetchSingleQuote(query);
+          if (quote) {
+              let market: MarketType = 'NASDAQ';
+              if (quote.symbol.includes('USDT')) market = 'CRYPTO';
+              else if (quote.symbol.endsWith('.KS')) market = 'KOSPI';
+              else if (quote.symbol.endsWith('.KQ')) market = 'KOSDAQ';
+              else if (!quote.symbol.includes('.')) market = 'NASDAQ';
+              else market = 'NYSE';
+              
+              const newSignal = generateMockSignal(quote.symbol, market, quote.price, quote.changePercent);
+              setSignals(prev => [newSignal, ...prev]);
+              setSelectedSignalId(newSignal.id);
+              if (viewMode === 'MOBILE') setMobileTab('CHART');
+          } else {
+              const fallbackSignal = generateMockSignal(qUpper, 'NYSE', 0, 0); 
+              fallbackSignal.reasons = ["Added via Global Search", "Price data unavailable"];
+              setSignals(prev => [fallbackSignal, ...prev]);
+              setSelectedSignalId(fallbackSignal.id);
+              if (viewMode === 'MOBILE') setMobileTab('CHART');
+          }
+      } catch (e) {
+          console.error("Search error", e);
+      }
   };
+
+  const handleRunAnalysis = async (model: DeepDiveModel, style: AnalysisStyle) => {
+      if (!selectedSignal) return;
+      setIsAnalyzing(true);
+      setAnalysisError(null);
+      setIsAnalysisOpen(true); 
+
+      try {
+          const result = await analyzeSignalWithPerplexity(selectedSignal, model, style);
+          setAnalysisResult(result);
+      } catch (e) {
+          setAnalysisError("AI 분석 엔진 연결 실패. 잠시 후 다시 시도해주세요.");
+      } finally {
+          setIsAnalyzing(false);
+      }
+  };
+
+  const selectedSignal = signals.find(s => s.id === selectedSignalId) || null;
+
+  const filteredSignals = signals.filter(s => {
+    if (s.id === selectedSignalId) return true;
+    if (activeFilter === 'CRYPTO' && s.market !== 'CRYPTO') return false;
+    if (activeFilter === 'KR' && !s.market.includes('KOS')) return false;
+    if (activeFilter === 'GLOBAL' && (s.market === 'CRYPTO' || s.market.includes('KOS'))) return false;
+    if (activeFilter === 'WHALE' && s.whale_signals.length === 0) return false;
+    return true;
+  });
 
   return (
-    <div className="app-root">
-      {/* 상단 헤더 */}
-      <header className="app-header">
-        <div>
-          <h1 className="app-title">Global Market Radar</h1>
-          <p className="app-subtitle">
-            실시간 글로벌 시세 · 뉴스 · 워치리스트를 한 화면에서 모니터링
-          </p>
+    <div className={`flex flex-col h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden select-none transition-colors duration-1000 ${
+        config.theme.primary === 'orange' ? 'theme-war' : config.theme.primary === 'purple' ? 'theme-whale' : ''
+    }`}>
+      <style>{`
+        .theme-war .border-cyan-500 { border-color: #ef4444 !important; }
+        .theme-war .text-cyan-400 { color: #f87171 !important; }
+        .theme-war .bg-cyan-600 { background-color: #dc2626 !important; }
+        .theme-whale .border-cyan-500 { border-color: #a855f7 !important; }
+        .theme-whale .text-cyan-400 { color: #c084fc !important; }
+        .theme-whale .bg-cyan-600 { background-color: #9333ea !important; }
+      `}</style>
+
+      <Header 
+        activePreset={activePreset} 
+        onSelectPreset={setActivePreset} 
+        logs={logs}
+        activeFilter={activeFilter}
+        onSelectFilter={setActiveFilter}
+        onSearch={handleSearch}
+        onOpenSystemUpdate={() => setIsSystemUpdateOpen(true)}
+        viewMode={viewMode}
+        onToggleViewMode={() => setViewMode(prev => prev === 'PC' ? 'MOBILE' : 'PC')}
+      />
+      
+      {viewMode === 'PC' ? (
+        // --- PC LAYOUT (3-Column) ---
+        <div className="flex-1 flex overflow-hidden">
+            <div className={`${isSidebarCollapsed ? 'w-12' : 'w-72'} flex-shrink-0 flex flex-col z-20 border-r border-slate-800 transition-all duration-300`}>
+                <SignalList 
+                    signals={filteredSignals} 
+                    selectedSignalId={selectedSignalId} 
+                    onSelectSignal={(s) => setSelectedSignalId(s.id)}
+                    isCollapsed={isSidebarCollapsed}
+                    onToggle={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+                />
+            </div>
+
+            <div className="flex-1 flex flex-col min-w-0 bg-slate-950 relative">
+            <div className="flex-1 min-h-0 border-b border-slate-800 relative flex flex-col">
+                <ChartPanel signal={selectedSignal} />
+            </div>
+            <div className="h-[320px] flex-shrink-0 relative z-10 bg-[#050914]">
+                <DetailPanel 
+                    signal={selectedSignal} 
+                    onOpenAnalysis={handleRunAnalysis}
+                    onRefreshNews={() => {}}
+                    isNewsLoading={isNewsLoading}
+                    onOpenDailyBriefing={() => setNewsPopup({isOpen:true, symbol: selectedSignal?.symbol||'', market: selectedSignal?.market||'NASDAQ'})}
+                    onOpenSimulation={() => setIsSimulationOpen(true)}
+                />
+            </div>
+            </div>
+
+            <RightPanel 
+                isCollapsed={isRightPanelCollapsed} 
+                onToggle={() => setIsRightPanelCollapsed(!isRightPanelCollapsed)}
+                activeFilter={activeFilter}
+                signals={signals}
+                whales={whales}
+            />
         </div>
-
-        <div className="top-controls">
-          <select
-            className="select"
-            value={selectedMarket}
-            onChange={(e) => {
-              const m = e.target.value as Market;
-              setSelectedMarket(m);
-            }}
-          >
-            <option value="BINANCE">Binance</option>
-            <option value="UPBIT">Upbit</option>
-            <option value="BITHUMB">Bithumb</option>
-            <option value="OKX">OKX</option>
-          </select>
-
-          <input
-            className="input"
-            value={symbolInput}
-            onChange={(e) => setSymbolInput(e.target.value)}
-            placeholder="예: BTCUSDT / BTC-KRW / BTC_KRW / BTC-USDT"
-          />
-
-          <button className="button primary" onClick={handleApplySymbol}>
-            심볼 적용
-          </button>
-          <button className="button ghost" onClick={handleAddToWatchlist}>
-            워치리스트 추가
-          </button>
-        </div>
-      </header>
-
-      {/* 메인 3열 레이아웃 */}
-      <main className="app-grid">
-        {/* 1. 좌측: 현재 심볼 + 워치리스트 */}
-        <section className="panel">
-          <h2 className="panel-title">현재 심볼</h2>
-          <div className="symbol-card">
-            <div className="symbol-header">
-              <span className="symbol-tag">{selectedMarket}</span>
-              <span className="symbol-name">{activeSymbol}</span>
-            </div>
-
-            <div className="symbol-body">
-              <div className="symbol-row">
-                <span className="label">Last Price</span>
-                <span className="value">
-                  {priceLoading
-                    ? "Loading..."
-                    : priceInfo
-                    ? priceInfo.lastPrice.toLocaleString(undefined, {
-                        maximumFractionDigits: 4,
-                      })
-                    : "–"}
-                </span>
-              </div>
-              <div className="symbol-row">
-                <span className="label">24h Change</span>
-                <span
-                  className={
-                    priceInfo && priceInfo.change24h > 0
-                      ? "value positive"
-                      : priceInfo && priceInfo.change24h < 0
-                      ? "value negative"
-                      : "value"
-                  }
-                >
-                  {priceLoading
-                    ? "Loading..."
-                    : priceInfo
-                    ? `${priceInfo.change24h.toFixed(2)}%`
-                    : "–"}
-                </span>
-              </div>
-              <div className="symbol-row">
-                <span className="label">24h Volume (quote)</span>
-                <span className="value">
-                  {priceLoading
-                    ? "Loading..."
-                    : priceInfo
-                    ? priceInfo.volume24h.toLocaleString(undefined, {
-                        maximumFractionDigits: 2,
-                      })
-                    : "–"}
-                </span>
-              </div>
-            </div>
-
-            {priceError && (
-              <div className="error" style={{ marginTop: 8 }}>
-                {priceError}
-              </div>
-            )}
-          </div>
-
-          <h2 className="panel-title mt-24">워치리스트</h2>
-          <div className="watchlist">
-            {watchlist.length === 0 && (
-              <div className="empty">워치리스트가 비어 있습니다.</div>
-            )}
-
-            {watchlist.map((item) => (
-              <button
-                key={`${item.market}-${item.symbol}`}
-                className="watch-item"
-                onClick={() => {
-                  setSelectedMarket(item.market);
-                  setActiveSymbol(item.symbol);
-                  setSymbolInput(item.symbol);
-                  fetchPrice(item.market, item.symbol);
-                }}
-              >
-                <div className="watch-symbol-row">
-                  <span className="watch-symbol">{item.symbol}</span>
-                  <span className="watch-market">{item.market}</span>
-                </div>
-                <div className="watch-meta-row">
-                  <span className="watch-price">
-                    {item.lastPrice
-                      ? item.lastPrice.toLocaleString(undefined, {
-                          maximumFractionDigits: 4,
-                        })
-                      : "—"}
-                  </span>
-                  <span
-                    className={
-                      item.change24h > 0
-                        ? "watch-change positive"
-                        : item.change24h < 0
-                        ? "watch-change negative"
-                        : "watch-change"
-                    }
-                  >
-                    {item.change24h
-                      ? `${item.change24h.toFixed(2)}%`
-                      : "0.00%"}
-                  </span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        {/* 2. 중앙: 차트 */}
-        <section className="panel">
-          <h2 className="panel-title">차트 / 오더북</h2>
-          <div
-            className="chart-placeholder"
-            ref={chartContainerRef}
-            style={{ padding: 0 }}
-          >
-            {/* 차트는 JS가 ref 위에 직접 그림 */}
-          </div>
-          {klineLoading && (
-            <div className="info" style={{ marginTop: 8 }}>
-              캔들 데이터 불러오는 중…
-            </div>
-          )}
-          {klineError && (
-            <div className="error" style={{ marginTop: 8 }}>
-              {klineError}
-            </div>
-          )}
-          {!klineLoading && !klineError && selectedMarket !== "BINANCE" && (
-            <div className="info" style={{ marginTop: 8 }}>
-              현재 캔들 차트는 BINANCE 기준만 지원합니다.
-            </div>
-          )}
-        </section>
-
-        {/* 3. 우측: 라이브 뉴스 */}
-        <section className="panel">
-          <h2 className="panel-title">라이브 뉴스 (/api/live-news)</h2>
-
-          {newsLoading && <div className="info">뉴스 불러오는 중…</div>}
-          {newsError && <div className="error">{newsError}</div>}
-
-          {!newsLoading && !newsError && news.length === 0 && (
-            <div className="empty">
-              표시할 뉴스가 없습니다. <br />
-              Worker에서 반환하는 JSON 구조를 먼저 확인해 주세요.
-            </div>
-          )}
-
-          <div className="news-list">
-            {news.map((item) => (
-              <article key={item.id} className="news-item">
-                <div className="news-header">
-                  <span className="news-source">{item.source}</span>
-                  <span className="news-time">{item.time}</span>
-                </div>
-                <h3 className="news-title">{item.title}</h3>
-                {item.symbol && (
-                  <div className="news-symbol-badge">{item.symbol}</div>
+      ) : (
+        // --- MOBILE LAYOUT (Stacked with Bottom Nav) ---
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+            <div className="flex-1 relative overflow-hidden flex flex-col">
+                {mobileTab === 'SIGNALS' && (
+                    <div className="w-full h-full">
+                        <SignalList 
+                            signals={filteredSignals} 
+                            selectedSignalId={selectedSignalId} 
+                            onSelectSignal={(s) => {
+                                setSelectedSignalId(s.id);
+                                setMobileTab('CHART');
+                            }}
+                            isCollapsed={false}
+                            onToggle={() => {}}
+                        />
+                    </div>
                 )}
-              </article>
-            ))}
-          </div>
-        </section>
-      </main>
+
+                {mobileTab === 'CHART' && (
+                    <div className="flex flex-col h-full">
+                        <div className="h-[40%] border-b border-slate-800 relative">
+                             <ChartPanel signal={selectedSignal} />
+                        </div>
+                        <div className="flex-1 relative overflow-hidden">
+                             <DetailPanel 
+                                signal={selectedSignal} 
+                                onOpenAnalysis={handleRunAnalysis}
+                                onRefreshNews={() => {}}
+                                isNewsLoading={isNewsLoading}
+                                onOpenDailyBriefing={() => setNewsPopup({isOpen:true, symbol: selectedSignal?.symbol||'', market: selectedSignal?.market||'NASDAQ'})}
+                                onOpenSimulation={() => setIsSimulationOpen(true)}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {mobileTab === 'MARKET' && (
+                     <div className="w-full h-full">
+                        <RightPanel 
+                            isCollapsed={false} 
+                            onToggle={() => {}}
+                            activeFilter={activeFilter}
+                            signals={signals}
+                            whales={whales}
+                        />
+                        {/* Force RightPanel to be full width via inline styles override if needed, 
+                            but RightPanel has w-80 class. We might need to override it or assume 
+                            it fills container flex-col. The RightPanel component uses fixed width classes.
+                            Let's rely on container constraints or we might need to adjust RightPanel props. 
+                            Actually, RightPanel has `w-80 lg:w-96` which is fixed. 
+                            Ideally we pass a prop `isMobile` to RightPanel to make it `w-full`.
+                            For now, since we didn't update RightPanel props, it will be 320px width.
+                            Mobile screens are usually > 320px so it fits, or we center it.
+                        */}
+                     </div>
+                )}
+            </div>
+
+            {/* Mobile Bottom Navigation */}
+            <div className="h-16 bg-slate-900 border-t border-slate-800 flex items-center justify-around shrink-0 px-2 pb-safe">
+                <button 
+                    onClick={() => setMobileTab('SIGNALS')}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${mobileTab === 'SIGNALS' ? 'text-cyan-400' : 'text-slate-500'}`}
+                >
+                    <List size={20} />
+                    <span className="text-[10px] font-bold">SIGNALS</span>
+                </button>
+                <button 
+                    onClick={() => setMobileTab('CHART')}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${mobileTab === 'CHART' ? 'text-cyan-400' : 'text-slate-500'}`}
+                >
+                    <BarChart2 size={20} />
+                    <span className="text-[10px] font-bold">CHART</span>
+                </button>
+                <button 
+                    onClick={() => setMobileTab('MARKET')}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors ${mobileTab === 'MARKET' ? 'text-cyan-400' : 'text-slate-500'}`}
+                >
+                    <Globe size={20} />
+                    <span className="text-[10px] font-bold">MARKET</span>
+                </button>
+            </div>
+        </div>
+      )}
+
+      <AnalysisModal isOpen={isAnalysisOpen} onClose={() => setIsAnalysisOpen(false)} isLoading={isAnalyzing} error={analysisError} data={analysisResult} symbol={selectedSignal?.symbol || ''} />
+      <SimulationModal isOpen={isSimulationOpen} onClose={() => setIsSimulationOpen(false)} signal={selectedSignal} />
+      <SystemUpdateModal isOpen={isSystemUpdateOpen} onClose={() => setIsSystemUpdateOpen(false)} />
+      <NewsPopup isOpen={newsPopup.isOpen} onClose={() => setNewsPopup(p => ({...p, isOpen:false}))} symbol={newsPopup.symbol} market={newsPopup.market} />
+      {config.layout.showBreakingTicker && <BreakingNewsTicker />}
     </div>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <LanguageProvider>
+      <SystemProvider>
+        <Dashboard />
+      </SystemProvider>
+    </LanguageProvider>
   );
 }
 
