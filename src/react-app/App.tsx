@@ -144,86 +144,64 @@ function App() {
     fetchPrice("BINANCE", "BTCUSDT");
   }, []);
 
-  // ---- 차트: activeSymbol / selectedMarket 바뀔 때마다 캔들 호출 ----
-  useEffect(() => {
-    const container = chartContainerRef.current;
-    if (!container || !("LightweightCharts" in window)) return;
+ // ---- 차트: activeSymbol / selectedMarket 바뀔 때마다 캔들 호출 ----
+useEffect(() => {
+  const container = chartContainerRef.current;
+  if (!container || !("LightweightCharts" in window)) return;
 
-    setKlineLoading(true);
-    setKlineError(null);
+  setKlineLoading(true);
+  setKlineError(null);
 
-    // 차트 생성
-    const chart = LightweightCharts.createChart(container, {
-      layout: {
-        background: { color: "#020617" },
-        textColor: "#e5e7eb",
-      },
-      grid: {
-        vertLines: { color: "#111827" },
-        horzLines: { color: "#111827" },
-      },
-      timeScale: {
-        borderColor: "#1f2937",
-      },
-      rightPriceScale: {
-        borderColor: "#1f2937",
-      },
-      width: container.clientWidth,
-      height: 260,
-    });
+  const chart = LightweightCharts.createChart(container, {
+    // ...
+  });
 
-    const candleSeries = chart.addCandlestickSeries({
-      upColor: "#22c55e",
-      downColor: "#ef4444",
-      borderUpColor: "#22c55e",
-      borderDownColor: "#ef4444",
-      wickUpColor: "#22c55e",
-      wickDownColor: "#ef4444",
-    });
+  const candleSeries = chart.addCandlestickSeries({
+    // ...
+  });
 
-    const handleResize = () => {
-      chart.applyOptions({ width: container.clientWidth });
-    };
-    window.addEventListener("resize", handleResize);
+  const handleResize = () => {
+    chart.applyOptions({ width: container.clientWidth });
+  };
+  window.addEventListener("resize", handleResize);
 
-    const loadKlines = async () => {
-      try {
-        // 현재는 BINANCE만 지원
-        const res = await fetch(
-          `/api/kline?market=${selectedMarket}&symbol=${encodeURIComponent(
-            activeSymbol
-          )}&interval=1h&limit=150`
-        );
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || `HTTP ${res.status}`);
-        }
-        const data: Candle[] = await res.json();
-
-        const formatted = data.map((c) => ({
-          time: c.time,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-        }));
-
-        candleSeries.setData(formatted);
-      } catch (err: any) {
-        console.error("kline error:", err);
-        setKlineError(err.message ?? String(err));
-      } finally {
-        setKlineLoading(false);
+  const loadKlines = async () => {
+    try {
+      const res = await fetch(
+        `/api/kline?market=${selectedMarket}&symbol=${encodeURIComponent(
+          activeSymbol
+        )}&interval=1h&limit=150`
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
       }
-    };
+      const data: Candle[] = await res.json();
 
-    loadKlines();
+      const formatted = data.map((c) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      }));
 
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      chart.remove();
-    };
-  }, [activeSymbol, selectedMarket]);
+      candleSeries.setData(formatted);
+    } catch (err: any) {
+      console.error("kline error:", err);
+      setKlineError(err.message ?? String(err));
+    } finally {
+      setKlineLoading(false);
+    }
+  };
+
+  loadKlines();
+
+  return () => {
+    window.removeEventListener("resize", handleResize);
+    chart.remove();
+  };
+}, [activeSymbol, selectedMarket]);
 
   // ---- 심볼 적용 버튼 ----
   const handleApplySymbol = () => {
